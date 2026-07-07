@@ -1,4 +1,8 @@
 
+
+https://github.com/user-attachments/assets/d5cd9d26-5d0c-45f7-85fc-ddee5128830d
+
+
 # ARM Single Cycle CPU Core
 
 This repository contains a Makerchip implementation of a simple ARM single-cycle processor design.
