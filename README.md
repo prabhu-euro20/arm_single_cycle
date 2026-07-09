@@ -1,6 +1,11 @@
 
 
-https://github.com/user-attachments/assets/d5cd9d26-5d0c-45f7-85fc-ddee5128830d
+
+
+https://github.com/user-attachments/assets/eb7082fa-e73b-402b-8aca-3123d60bddc2
+
+
+
 
 
 # ARM Single Cycle CPU Core
@@ -116,6 +121,9 @@ cyc=39 pc=0x14 instr=0xf8400005  X1=10 X2=20 X3=30 X4=10 X5=30  Mem[0]=30  passe
 sim/tb.sv:31: $finish called at 416000 (1ps)
 ```
 
+Makerchip ide link: https://www.makerchip.com/v154/ide/~02kfkhmx/p-0P1hn
 ## License
 
 This project is licensed under the MIT License. See the LICENSE file for details.
+
+
