@@ -56,10 +56,10 @@ module tb;
     repeat (2) @(posedge clk);
     reset = 0;
 
-    repeat (40) begin
+    repeat (90) begin
       @(posedge clk);
       #1;
-      $display("cyc=%0d pc=0x%0h instr=0x%08h  X1=%0d X2=%0d X3=%0d X4=%0d X5=%0d X6=%0d  Mem[0]=%0d passed=%0b",
+      $display("cyc=%0d pc=0x%0h instr=0x%08h  X1=%0d X2=%0d X3=%0d X4=%0d X5=%0d X6=%0d  Mem[0]=%0d  passed=%0b",
                 cyc_cnt, dut.CPU_pc_a0, dut.CPU_instr_a0,
                 dut.CPU_Xreg_val_a0[1], dut.CPU_Xreg_val_a0[2], dut.CPU_Xreg_val_a0[3],
                 dut.CPU_Xreg_val_a0[4], dut.CPU_Xreg_val_a0[5], dut.CPU_Xreg_val_a0[6],

@@ -4,18 +4,6 @@
    //  ARM Single-Cycle CPU Core
    //  9 Instructions: ADD  SUB  ADDI  SUBI  LDUR  STUR  B  CBZ  CBNZ
    //
-   //  Test Program (inline ROM):
-   //    0x00: ADDI X1, X0, #10    → X1 = 10
-   //    0x04: ADDI X2, X0, #20    → X2 = 20
-   //    0x08: ADD  X3, X1, X2     → X3 = 30
-   //    0x0C: SUB  X4, X2, X1     → X4 = 10
-   //    0x10: SUBI X6, X2, #5     → X6 = 15
-   //    0x14: STUR X3, [X0, #0]   → Mem[0] = 30
-   //    0x18: LDUR X5, [X0, #0]   → X5 = 30  ← PASS condition
-   //    0x1C: CBZ  X1, #2         → not taken  (X1=10≠0)
-   //    0x20: CBNZ X4, #-3        → TAKEN      (X4=10≠0) → 0x14
-   //    0x24: B    #0             → infinite loop
-   //
    //  Waveform signals to watch (add in Makerchip waveform panel):
    //    |cpu @0  $pc, $instr, $is_r_type, $is_i_type, $is_d_type,
    //             $is_b_type, $is_cb_type, $reg_write, $alu_src,
@@ -26,6 +14,65 @@
    //    /dmem[0]    $val   — data memory at address 0
    // ═══════════════════════════════════════════════════════════════════
    m4_makerchip_module
+
+   // ═══════════════════════════════════════════════════════════════════
+   //  INSTRUCTION ENCODER  —  write the program below as assembly-style
+   //  calls (register numbers and immediates as plain decimal numbers);
+   //  each function computes the correct 32-bit LEGv8 encoding at
+   //  compile time. No hex is ever hand-computed, and the datapath and
+   //  control logic further down never change regardless of what program
+   //  is loaded here -- they only ever see the resulting $instr words.
+   //  Immediate units: LDUR/STUR imm9 is a byte offset; CBZ/CBNZ imm19
+   //  and B imm26 are instruction-count offsets (each gets shifted left 2
+   //  further down in the branch-target adder), matching normal LEGv8
+   //  assembler convention for PC-relative branch displacements.
+   // ═══════════════════════════════════════════════════════════════════
+   function automatic logic [31:0] ADD(int rd, int rn, int rm);
+      return {11'b10001011000, rm[4:0], 6'b0, rn[4:0], rd[4:0]};
+   endfunction
+   function automatic logic [31:0] SUB(int rd, int rn, int rm);
+      return {11'b11001011000, rm[4:0], 6'b0, rn[4:0], rd[4:0]};
+   endfunction
+   function automatic logic [31:0] ADDI(int rd, int rn, int imm12);
+      return {10'b1001000100, imm12[11:0], rn[4:0], rd[4:0]};
+   endfunction
+   function automatic logic [31:0] SUBI(int rd, int rn, int imm12);
+      return {10'b1101000100, imm12[11:0], rn[4:0], rd[4:0]};
+   endfunction
+   function automatic logic [31:0] LDUR(int rt, int rn, int imm9);
+      return {11'b11111000010, imm9[8:0], 2'b00, rn[4:0], rt[4:0]};
+   endfunction
+   function automatic logic [31:0] STUR(int rt, int rn, int imm9);
+      return {11'b11111000000, imm9[8:0], 2'b00, rn[4:0], rt[4:0]};
+   endfunction
+   function automatic logic [31:0] CBZ(int rt, int imm19);
+      return {8'b10110100, imm19[18:0], rt[4:0]};
+   endfunction
+   function automatic logic [31:0] CBNZ(int rt, int imm19);
+      return {8'b10110101, imm19[18:0], rt[4:0]};
+   endfunction
+   function automatic logic [31:0] B(int imm26);
+      return {6'b000101, imm26[25:0]};
+   endfunction
+
+   // ── THE PROGRAM  —  edit freely: change operands, add or remove
+   // lines. ROM_SIZE and addressing follow automatically; nothing
+   // downstream needs to change to run a different program.
+   localparam int ROM_SIZE = 11;
+   logic [31:0] ROM [0:ROM_SIZE-1];
+   initial begin
+      ROM[0] = ADDI(1, 0, 10);   // ADDI X1, X0, #10   -> X1 = 10
+      ROM[1] = ADDI(2, 0, 20);   // ADDI X2, X0, #20   -> X2 = 20
+      ROM[2] = ADD (3, 1, 2);    // ADD  X3, X1, X2    -> X3 = 30
+      ROM[3] = SUB (4, 2, 1);    // SUB  X4, X2, X1    -> X4 = 10
+      ROM[4] = SUBI(6, 2, 5);    // SUBI X6, X2, #5    -> X6 = 15
+      ROM[5] = CBNZ(4, 2);       // CBNZ X4, #2       -> TAKEN (X4=10) -> back to STUR
+      ROM[6] = SUBI(6, 2, 5);    // SUBI X6, X2, #5    -> X6 = 15
+      ROM[7] = STUR(3, 0, 0);    // STUR X3, [X0, #0]  -> Mem[0] = 30
+      ROM[8] = LDUR(5, 0, 0);    // LDUR X5, [X0, #0]  -> X5 = 30 (PASS condition)
+      ROM[9] = CBZ (1, 2);       // CBZ  X1, #2        -> not taken (X1=10)
+      ROM[10] = B   (-10);          // B    #-10            -> starting instruction -> pc=0
+   end
 
 \TLV
 
@@ -63,25 +110,28 @@
                                                 >>1$pc + 64'd4;
 
          // ─────────────────────────────────────────────────────────
-         //  INSTRUCTION MEMORY  (inline ROM — 9 entries)
-         //  Encoding reference:
-         //   R-format opcode[31:21]:  ADD=10001011000  SUB=11001011000
-         //   I-format opcode[31:22]: ADDI=1001000100  SUBI=1101000100
-         //   D-format opcode[31:21]: LDUR=11111000010 STUR=11111000000
-         //   B-format opcode[31:26]:    B=000101
-         //  CB-format opcode[31:24]:  CBZ=10110100   CBNZ=10110101
+         //  INSTRUCTION MEMORY  —  reads the ROM[] array assembled above
+         //  by the encoder functions. Any PC past the end of the program
+         //  keeps re-fetching the last instruction (a safe fallback if
+         //  the program does not end in its own infinite loop).
          // ─────────────────────────────────────────────────────────
-         $instr[31:0] =
-            ($pc[6:2] == 5'd0) ? 32'h91002801 :  // ADDI X1, X0, #10
-            ($pc[6:2] == 5'd1) ? 32'h91005042 :  // ADDI X2, X0, #20
-            ($pc[6:2] == 5'd2) ? 32'h8B020023 :  // ADD  X3, X1, X2
-            ($pc[6:2] == 5'd3) ? 32'hCB010044 :  // SUB  X4, X2, X1
-            ($pc[6:2] == 5'd4) ? 32'hD1001446 :  // SUBI X6, X2, #5
-            ($pc[6:2] == 5'd5) ? 32'hF8000003 :  // STUR X3, [X0, #0]
-            ($pc[6:2] == 5'd6) ? 32'hF8400005 :  // LDUR X5, [X0, #0]
-            ($pc[6:2] == 5'd7) ? 32'hB4000041 :  // CBZ  X1, #2
-            ($pc[6:2] == 5'd8) ? 32'hB5FFFFA4 :  // CBNZ X4, #-3
-                                  32'h14000000;   // B    #0  (loop forever)
+         $instr[31:0] = ROM[($pc[6:2] >= ROM_SIZE) ? ROM_SIZE - 1 : $pc[6:2]];
+
+         // Program length, exposed so the VIZ can size its listing to
+         // whatever program is actually loaded, instead of a fixed count.
+         $rom_size[31:0] = ROM_SIZE;
+
+         // ─────────────────────────────────────────────────────────
+         //  ROM CONTENTS, exposed per-address for the VIZ's code-editor
+         //  listing to read directly and disassemble -- not duplicated
+         //  as a separate hardcoded list. 32 entries is not an arbitrary
+         //  cap: it is the actual addressable range of $pc[6:2] (5 bits),
+         //  the same limit the real fetch logic above is already subject
+         //  to. Addresses past the real program just read 0 (never
+         //  displayed, since the VIZ only shows the first $rom_size rows).
+         // ─────────────────────────────────────────────────────────
+         /rom[31:0]
+            $word[31:0] = (#rom < ROM_SIZE) ? ROM[#rom] : 32'b0;
 
          // ─────────────────────────────────────────────────────────
          //  DECODE — Instruction Format Detection
@@ -247,24 +297,19 @@
                // ── CODE EDITOR (left) ───────────────────────────────────
                let ed_box = new fabric.Rect({left: 10, top: 72, width: 460, height: 210, fill: "#0a1930", stroke: "#233", strokeWidth: 1, selectable: false, evented: false})
                let ed_hl  = new fabric.Rect({left: 12, top: 80, width: 456, height: 19, fill: "#b5652f", selectable: false, evented: false})
-               const ROM = [
-                  ["ADDI", "X1,X0,#10",     "0x00 91002801"],
-                  ["ADDI", "X2,X0,#20",     "0x04 91005042"],
-                  ["ADD ", "X3,X1,X2",      "0x08 8B020023"],
-                  ["SUB ", "X4,X2,X1",      "0x0C CB010044"],
-                  ["SUBI", "X6,X2,#5",      "0x10 D1001446"],
-                  ["STUR", "X3,(X0,#0)",    "0x14 F8000003"],
-                  ["LDUR", "X5,(X0,#0)",    "0x18 F8400005"],
-                  ["CBZ ", "X1,#2",         "0x1C B4000041"],
-                  ["CBNZ", "X4,#-3",        "0x20 B5FFFFA4"],
-                  ["B   ", "#0",            "0x24 14000000"]
-               ]
+               // 11 blank row slots (as many as the 210px-tall panel can show
+               // at 19px/row) -- their text is filled in render() by
+               // disassembling whatever program is actually in ROM[], so
+               // this listing is never hand-maintained separately from the
+               // program itself. Programs longer than 11 instructions are
+               // still fully executed (up to the real 32-entry addressable
+               // limit) but only the first 11 lines are visible here.
                let edRows = {}
-               ROM.forEach((row, i) => {
+               for (let i = 0; i < 11; i++) {
                   edRows["ed_num_" + i] = mkTxt(18, 82 + i * 19, String(i + 1).padStart(2, " "), 11, "#5a6b8c", false)
-                  edRows["ed_txt_" + i] = mkTxt(42, 82 + i * 19, row[0] + " " + row[1], 11, "#e6edf3", false)
-                  edRows["ed_hex_" + i] = mkTxt(230, 82 + i * 19, row[2], 9, "#4a5568", false)
-               })
+                  edRows["ed_txt_" + i] = mkTxt(42, 82 + i * 19, "", 11, "#e6edf3", false)
+                  edRows["ed_hex_" + i] = mkTxt(230, 82 + i * 19, "", 9, "#4a5568", false)
+               }
 
                // ── CPU LOG (right) ──────────────────────────────────────
                let log_box = new fabric.Rect({left: 480, top: 72, width: 590, height: 210, fill: "#161b22", stroke: "#233", strokeWidth: 1, selectable: false, evented: false})
@@ -495,11 +540,48 @@
                let x6 = '/xreg[6]$val'.asBigInt(0n)
                let m0 = '/dmem[0]$val'.asBigInt(0n)
 
-               const NAMES = ["ADDI X1,X0,#10", "ADDI X2,X0,#20", "ADD X3,X1,X2",
-                              "SUB X4,X2,X1", "SUBI X6,X2,#5", "STUR X3,(X0,#0)", "LDUR X5,(X0,#0)",
-                              "CBZ X1,#2", "CBNZ X4,#-3", "B #0"]
-               let idx = Math.min(Math.floor(Number(pc) / 4), 9)
-               let name = NAMES[idx] || "?"
+               // ── Disassembler: decodes any 32-bit LEGv8 word straight from
+               // the bits, so the whole VIZ (listing, log, status) reflects
+               // whatever program is actually in ROM[] -- never a separate,
+               // hand-maintained mnemonic list that could drift out of sync.
+               const disasm = (w) => {
+                  w = w >>> 0
+                  let op11 = (w >>> 21) & 0x7FF
+                  let op10 = (w >>> 22) & 0x3FF
+                  let op8  = (w >>> 24) & 0xFF
+                  let op6  = (w >>> 26) & 0x3F
+                  let rd = w & 0x1F, rn = (w >>> 5) & 0x1F, rm = (w >>> 16) & 0x1F, rt = rd
+                  let imm12 = (w >>> 10) & 0xFFF
+                  let imm9raw  = (w >>> 12) & 0x1FF
+                  let imm9  = imm9raw  >= 256    ? imm9raw  - 512    : imm9raw
+                  let imm19raw = (w >>> 5) & 0x7FFFF
+                  let imm19 = imm19raw >= 262144 ? imm19raw - 524288 : imm19raw
+                  let imm26raw = w & 0x3FFFFFF
+                  let imm26 = imm26raw >= 33554432 ? imm26raw - 67108864 : imm26raw
+                  if (op11 === 0b10001011000) return "ADD X" + rd + ",X" + rn + ",X" + rm
+                  if (op11 === 0b11001011000) return "SUB X" + rd + ",X" + rn + ",X" + rm
+                  if (op10 === 0b1001000100)  return "ADDI X" + rd + ",X" + rn + ",#" + imm12
+                  if (op10 === 0b1101000100)  return "SUBI X" + rd + ",X" + rn + ",#" + imm12
+                  if (op11 === 0b11111000010) return "LDUR X" + rt + ",(X" + rn + ",#" + imm9 + ")"
+                  if (op11 === 0b11111000000) return "STUR X" + rt + ",(X" + rn + ",#" + imm9 + ")"
+                  if (op8  === 0b10110100)    return "CBZ X" + rt + ",#" + imm19
+                  if (op8  === 0b10110101)    return "CBNZ X" + rt + ",#" + imm19
+                  if (op6  === 0b000101)      return "B #" + imm26
+                  return "-- (0x" + w.toString(16) + ")"
+               }
+
+               // Program length and contents, read straight from the design
+               // (see /rom and $rom_size in the .tlv) -- not re-declared here.
+               let romSize = Number('$rom_size'.asInt(10))
+               let romWords = [
+                  '/rom[0]$word'.asInt(0),  '/rom[1]$word'.asInt(0),  '/rom[2]$word'.asInt(0),
+                  '/rom[3]$word'.asInt(0),  '/rom[4]$word'.asInt(0),  '/rom[5]$word'.asInt(0),
+                  '/rom[6]$word'.asInt(0),  '/rom[7]$word'.asInt(0),  '/rom[8]$word'.asInt(0),
+                  '/rom[9]$word'.asInt(0),  '/rom[10]$word'.asInt(0)
+               ]
+               let visibleRomSize = Math.min(romSize, 11)
+               let idx = Math.min(Math.floor(Number(pc) / 4), Math.max(visibleRomSize - 1, 0))
+               let name = disasm(instr)
                let tstr = is_r ? "R" : is_i ? "I" : is_d ? "D" : is_b ? "B" : is_cb ? "CB" : "?"
                let aop  = (is_r || is_i || is_ldur || is_stur) ? (is_d ? "addr+" : "op") : "--"
 
@@ -514,14 +596,30 @@
                let writeBackFromALU = reg_write && !mem_to_reg
                let usesWriteBack    = reg_write
                let usesBranchCalc   = is_b || is_cb
-               let usesZeroCheck    = is_cb
 
                let objs = this.getObjects()
 
-               // Code editor: highlight current line, CPU log: recent history.
+               // Code editor: fill in whatever the ROM actually contains
+               // (up to the 11 visible rows), and highlight the current line.
+               for (let i = 0; i < 11; i++) {
+                  if (i < romSize) {
+                     objs["ed_txt_" + i].set({text: disasm(romWords[i])})
+                     objs["ed_hex_" + i].set({text: "0x" + (i * 4).toString(16).toUpperCase().padStart(2, "0") +
+                                                     " " + (romWords[i] >>> 0).toString(16).toUpperCase().padStart(8, "0")})
+                  } else {
+                     objs["ed_txt_" + i].set({text: ""})
+                     objs["ed_hex_" + i].set({text: ""})
+                  }
+               }
                objs.ed_hl.set({top: 80 + idx * 19})
-               let hist = NAMES.slice(Math.max(0, idx - 5), idx + 1).join("  |  ")
-               objs.log_txt.set({text: hist})
+
+               // CPU log: genuine execution history (append the currently
+               // disassembled instruction each cycle) -- correct even when
+               // the program branches or loops, unlike a lookup by address.
+               if (!this.history) this.history = []
+               this.history.push(name)
+               if (this.history.length > 6) this.history.shift()
+               objs.log_txt.set({text: this.history.join("  |  ")})
 
                // Register grid: PC, X0-X6, Zero flag, PCSrc.
                const regRow = [pc, 0n, x1, x2, x3, x4, x5, x6]
@@ -581,7 +679,12 @@
                setWire(objs.w_signext_shift, usesBranchCalc)
                setWire(objs.w_shift_branchadder, usesBranchCalc)
                setWire(objs.w_branchadder_pcsrcmux, usesBranchCalc)
-               objs.w_zero_flag.set({stroke: usesZeroCheck ? CTRL_ON : CTRL_OFF, strokeWidth: usesZeroCheck ? 1.6 : 1})
+               // This wire always carries the ALU's actual Zero value,
+               // physically, whether or not the current instruction is a
+               // branch -- so its highlight reflects that real value, not
+               // "is a CBZ/CBNZ currently executing." Only the AND/OR gates
+               // downstream represent whether that value was acted upon.
+               objs.w_zero_flag.set({stroke: alu_zero ? CTRL_ON : CTRL_OFF, strokeWidth: alu_zero ? 1.6 : 1})
 
                // ── Control-signal wires: bright when that control bit is
                // actually asserted this cycle, dim otherwise.
@@ -603,8 +706,14 @@
                // instruction type is active.
                let and1_true = branch_z && alu_zero
                let and2_true = branch_nz && !alu_zero
-               setCtrl(objs.zero_to_and1, branch_z)
-               setCtrl(objs.zero_to_and2, branch_nz)
+               // Same fix: these two forks carry the Zero flag (and its
+               // inverse) into the AND gates -- their brightness must track
+               // the actual bit value, not whether BranchZ/BranchNZ happen
+               // to be the current instruction. Otherwise a wire can appear
+               // "lit" while genuinely carrying a 0, which makes an AND gate
+               // that correctly stays dark look like a contradiction.
+               setCtrl(objs.zero_to_and1, alu_zero)
+               setCtrl(objs.zero_to_and2, !alu_zero)
                setCtrl(objs.and1_to_or, and1_true)
                setCtrl(objs.and2_to_or, and2_true)
                setCtrl(objs.or_to_pcsrcmux, pc_src)
